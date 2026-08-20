@@ -34,7 +34,7 @@ button { cursor: pointer; }
 .file-head { display: flex; justify-content: space-between; align-items: start; gap: 18px; }
 .file-name { font-size: 18px; font-weight: 760; word-break: break-all; }
 .meta { color: var(--muted); margin-top: 7px; font-size: 14px; }
-.warning { margin: 16px 0 0; padding: 12px 14px; border-radius: 12px; background: rgba(255,180,180,.08); border: 1px solid rgba(255,180,180,.22); color: #ffd4d4; font-size: 14px; line-height: 1.55; }
+.warning { margin: 16px 0 0; padding: 12px 14px; border-radius: 12px; background: rgba(255,180,180,.08); border: 1px solid rgba(255,180,180,.22); color: #ffd4d4; font-size: 14px; line-height: 1.55; white-space: pre-wrap; }
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 18px; }
 .control { padding: 15px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel-2); }
 .control label { display: block; color: var(--muted); font-size: 13px; margin-bottom: 8px; }
@@ -49,6 +49,8 @@ select { width: 100%; color: #fff; border: 1px solid var(--line); background: #1
 .status-row { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 14px; }
 .progress { height: 10px; background: rgba(255,255,255,.08); border-radius: 999px; overflow: hidden; margin: 11px 0 8px; }
 .progress > div { height: 100%; width: 0%; background: linear-gradient(90deg, #a8c5ff, #83f0c0); transition: width .2s linear; }
+.progress.indeterminate > div { width: 34%; animation: progress-indeterminate 1.15s ease-in-out infinite; transition: none; }
+@keyframes progress-indeterminate { 0% { transform: translateX(-120%); } 50% { transform: translateX(95%); } 100% { transform: translateX(310%); } }
 .log { margin-top: 10px; color: #8590aa; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .results { margin-top: 18px; display: grid; gap: 10px; }
 .result { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 13px 14px; border: 1px solid var(--line); border-radius: 13px; background: rgba(153,240,201,.055); }
