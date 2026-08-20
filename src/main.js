@@ -20,7 +20,7 @@ app.innerHTML = `
         <div id="warning" class="warning hidden"></div>
         <div class="grid">
           <div class="control"><label for="quality">MP3 音质</label><select id="quality"><option value="vbr2">智能 VBR · 高质量（推荐）</option><option value="128">128 kbps · 标准</option><option value="192">192 kbps · 高质量</option><option value="256">256 kbps · 很高</option><option value="320">320 kbps · 最高固定码率</option></select></div>
-          <div class="control"><label>处理模式</label><div style="line-height:1.55">优先使用 ffprobe JSON；失败时自动切换内存模式或 FFmpeg 日志识别，不会因 ffprobe 单独失败而直接终止。</div></div>
+          <div class="control"><label>处理模式</label><div style="line-height:1.55">使用 FFmpeg 只读探测读取音轨信息，不调用当前手机端容易 Aborted() 的 ffprobe；手机优先通过 WORKERFS 直接读取本地视频。</div></div>
         </div>
         <div id="tracks" class="tracks"></div>
         <div class="actions"><button id="convert" class="primary" disabled>转换所选音轨</button><button id="cancel" class="secondary hidden">取消</button></div>
@@ -278,54 +278,6 @@ async function switchInputToMemory(file, reason = '正在切换兼容模式') {
   setProgress(1, '视频读取完成，准备分析…');
 }
 
-function parseProbeInfo(info) {
-  const streams = Array.isArray(info?.streams) ? info.streams : [];
-  const audioStreams = streams.filter((s) => s.codec_type === 'audio');
-  const durationCandidates = [Number(info?.format?.duration), ...streams.map((s) => Number(s.duration))].filter((n) => Number.isFinite(n) && n > 0);
-  const duration = durationCandidates.length ? Math.max(...durationCandidates) : 0;
-  return {
-    duration,
-    formatName: info?.format?.format_name || '',
-    tracks: audioStreams.map((s, ordinal) => ({
-      ordinal,
-      streamIndex: Number(s.index),
-      lang: s.tags?.language || '未标注语言',
-      title: s.tags?.title || '',
-      codec: s.codec_name || '未知编码',
-      sampleRate: s.sample_rate ? `${s.sample_rate} Hz` : '',
-      channels: Number.isFinite(Number(s.channels)) ? `${s.channels} ch` : '',
-      channelLayout: s.channel_layout || '',
-      bitrate: s.bit_rate && Number.isFinite(Number(s.bit_rate)) ? `${Math.round(Number(s.bit_rate) / 1000)} kb/s` : '',
-    })).filter((t) => Number.isFinite(t.streamIndex)),
-  };
-}
-
-async function probeInputJSON() {
-  const probePath = 'probe-result.json';
-  await ffmpeg.deleteFile(probePath).catch(() => {});
-  logBuffer = [];
-  setIndeterminate('正在用 ffprobe 读取容器和音轨信息…', '分析中');
-  const code = await ffmpeg.ffprobe([
-    '-v', 'error',
-    '-show_streams',
-    '-show_format',
-    '-of', 'json',
-    inputPath,
-    '-o', probePath,
-  ]);
-  if (code !== 0) {
-    const details = recentLogs();
-    throw new Error(`ffprobe 返回码 ${code}${details ? `\n${details}` : ''}`);
-  }
-  const raw = await ffmpeg.readFile(probePath, 'utf8');
-  await ffmpeg.deleteFile(probePath).catch(() => {});
-  const text = typeof raw === 'string' ? raw : new TextDecoder().decode(raw);
-  let info;
-  try { info = JSON.parse(text); } catch { throw new Error('ffprobe 已运行成功，但返回的 JSON 无法解析。'); }
-  analysisMethod = 'ffprobe JSON';
-  return parseProbeInfo(info);
-}
-
 function parseDurationFromLogs(lines) {
   for (const line of lines) {
     const m = line.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/i);
@@ -365,46 +317,35 @@ function parseTracksFromLogs(lines) {
   return tracks;
 }
 
-async function probeInputFromFFmpegLogs(previousError) {
+async function probeInputFromFFmpegLogs() {
   logBuffer = [];
-  setIndeterminate('ffprobe 未能完成，正在改用 FFmpeg 日志识别音轨…', '兼容分析');
-  await ffmpeg.exec(['-hide_banner', '-i', inputPath]).catch(() => {});
+  setIndeterminate('正在读取视频容器和音轨信息…', '分析中');
+  const code = await ffmpeg.exec([
+    '-hide_banner',
+    '-i', inputPath,
+    '-map', '0:a?',
+    '-c', 'copy',
+    '-frames:a', '1',
+    '-f', 'null',
+    '-',
+  ]).catch(() => -1);
   const lines = [...logBuffer];
   const tracks = parseTracksFromLogs(lines);
   const duration = parseDurationFromLogs(lines);
   const inputLine = lines.find((line) => /Input #0,/i.test(line)) || '';
-  const formatName = inputLine.match(/Input #0,\s*(.+?),\s*from\s/i)?.[1] || 'FFmpeg 日志识别';
+  const formatName = inputLine.match(/Input #0,\s*(.+?),\s*from\s/i)?.[1] || 'FFmpeg 流信息识别';
+
   if (!tracks.length && !inputLine) {
-    const details = recentLogs(20);
-    throw new Error(`ffprobe 和 FFmpeg 日志分析都失败。${previousError ? `\n首次错误：${previousError.message}` : ''}${details ? `\n${details}` : ''}`);
+    const details = recentLogs(24);
+    throw new Error(`FFmpeg 无法读取该视频的媒体流信息（返回码 ${code}）。${details ? `\n${details}` : ''}`);
   }
-  analysisMethod = 'FFmpeg 日志兼容识别';
+
+  analysisMethod = 'FFmpeg 只读流探测';
   return { duration, formatName, tracks };
 }
 
-async function analyzeInput(file) {
-  let firstError = null;
-  try {
-    return await probeInputJSON();
-  } catch (error) {
-    firstError = error;
-    console.warn('ffprobe 首次失败', error);
-  }
-
-  if (inputMode === 'workerfs') {
-    const limit = isMobile ? MOBILE_MEMORY_FALLBACK_LIMIT : DESKTOP_MEMORY_FALLBACK_LIMIT;
-    if (file.size <= limit) {
-      try {
-        await switchInputToMemory(file, '直接挂载下 ffprobe 未成功');
-        return await probeInputJSON();
-      } catch (error) {
-        console.warn('内存模式 ffprobe 仍失败', error);
-        firstError = error;
-      }
-    }
-  }
-
-  return await probeInputFromFFmpegLogs(firstError);
+async function analyzeInput() {
+  return await probeInputFromFFmpegLogs();
 }
 
 function renderTracks(tracks) {
@@ -427,7 +368,7 @@ function classifyAnalysisError(error, file) {
   if (/memory|out of bounds|allocation|array buffer|quota|oom/.test(lower)) return `分析失败：浏览器可用内存不足。文件大小为 ${formatBytes(file.size)}。手机端建议关闭其他页面后重试，或在电脑端处理。\n${message}`;
   if (/mount|workerfs/.test(lower)) return `分析失败：浏览器无法直接挂载该视频文件。\n${message}`;
   if (/fetch|network|http|worker|engine/.test(lower)) return `分析失败：转换引擎或资源加载异常。\n${message}`;
-  if (/ffprobe|invalid data|moov atom|format|日志分析/.test(lower)) return `分析失败：FFmpeg 无法解析该视频容器或媒体结构。\n${message}`;
+  if (/invalid data|moov atom|format|媒体流信息|aborted/.test(lower)) return `分析失败：FFmpeg 无法解析该视频容器或媒体结构。\n${message}`;
   return `无法分析这个视频：${message}`;
 }
 
@@ -449,7 +390,7 @@ async function loadFile(file) {
     cancelBtn.classList.remove('hidden');
     await ensureFFmpeg();
     await attachInputFile(file);
-    const media = await analyzeInput(file);
+    const media = await analyzeInput();
     currentTracks = media.tracks;
     fileMeta.textContent = `${formatBytes(file.size)} · ${formatDuration(media.duration)} · ${media.formatName || '未知容器'} · ${media.tracks.length} 条音轨 · ${inputMode === 'workerfs' ? '直接挂载' : '内存兼容模式'} · ${analysisMethod}`;
     renderTracks(media.tracks);
