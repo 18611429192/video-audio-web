@@ -6,9 +6,43 @@
     <meta name="theme-color" content="#0b1020" />
     <meta name="description" content="完全在浏览器本地运行的视频音频分离与 MP3 转换工具" />
     <title>视频音频分离 · 本地 MP3 转换</title>
+    <style>
+      html,body{margin:0;min-height:100%;background:#0b1020;color:#eef2ff;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+      #boot{max-width:760px;margin:12vh auto;padding:28px;border:1px solid #26304d;border-radius:18px;background:#121a2c;line-height:1.7}
+      #boot h1{margin:0 0 10px;font-size:28px} #boot p{margin:6px 0;color:#c7d2fe}
+      #boot .err{margin-top:16px;padding:12px;border-radius:12px;background:#26151b;color:#fecdd3;white-space:pre-wrap;word-break:break-word}
+    </style>
   </head>
   <body>
-    <main id="app"></main>
-    <script type="module" src="/src/main.js"></script>
+    <main id="app">
+      <div id="boot">
+        <h1>视频 → MP3</h1>
+        <p>正在加载网页程序…</p>
+        <p>如果这里长时间不消失，页面脚本没有正确加载。</p>
+      </div>
+    </main>
+    <script>
+      window.__showBootError = function (message) {
+        var boot = document.getElementById('boot');
+        if (!boot) return;
+        var box = document.createElement('div');
+        box.className = 'err';
+        box.textContent = '页面脚本加载失败：\n' + message;
+        boot.appendChild(box);
+      };
+      window.addEventListener('error', function (event) {
+        if (event && event.message) window.__showBootError(event.message);
+      });
+      window.addEventListener('unhandledrejection', function (event) {
+        var reason = event && event.reason;
+        window.__showBootError(reason && reason.message ? reason.message : String(reason));
+      });
+      setTimeout(function () {
+        if (document.getElementById('boot')) {
+          window.__showBootError('主程序 8 秒内没有启动。请确认 GitHub Pages 的 Source 设置为 GitHub Actions，而不是 Deploy from a branch。');
+        }
+      }, 8000);
+    </script>
+    <script type="module" src="./src/main.js"></script>
   </body>
 </html>
