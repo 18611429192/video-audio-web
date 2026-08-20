@@ -51,6 +51,30 @@
           window.__showBootError('主程序 8 秒内没有启动。');
         }
       }, 8000);
+
+      // 源码直发到 GitHub Pages 时，@ffmpeg/ffmpeg 会从 esm.sh 运行。
+      // 浏览器不允许页面直接创建跨域 Worker，所以只把 FFmpeg 的这个 Worker
+      // 重定向到同源的小型引导脚本；Vite 正常构建出的同源 Worker 不受影响。
+      (function () {
+        var NativeWorker = window.Worker;
+        if (!NativeWorker || typeof Proxy === 'undefined') return;
+        var localFFmpegWorker = new URL('./src/ffmpeg-class-worker.js', window.location.href).href;
+        window.Worker = new Proxy(NativeWorker, {
+          construct: function (Target, args) {
+            var url = args[0];
+            var options = args[1];
+            try {
+              var parsed = new URL(String(url), window.location.href);
+              var isFFmpegCDNWorker = parsed.origin !== window.location.origin &&
+                parsed.hostname === 'esm.sh' &&
+                parsed.pathname.indexOf('/@ffmpeg/ffmpeg@0.12.15/') !== -1 &&
+                /\/worker\.js$/.test(parsed.pathname);
+              if (isFFmpegCDNWorker) url = localFFmpegWorker;
+            } catch (_) {}
+            return Reflect.construct(Target, [url, options]);
+          }
+        });
+      })();
     </script>
     <script type="module" src="./src/main.js"></script>
   </body>
