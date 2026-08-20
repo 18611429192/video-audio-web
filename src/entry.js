@@ -1,5 +1,6 @@
 async function loadSourceFallback() {
-  const response = await fetch('./main.js', { cache: 'no-store' });
+  const mainURL = new URL('./main.js', import.meta.url);
+  const response = await fetch(mainURL, { cache: 'no-store' });
   if (!response.ok) throw new Error(`main.js 加载失败：HTTP ${response.status}`);
 
   let code = await response.text();
