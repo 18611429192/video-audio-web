@@ -31,6 +31,7 @@
       </div>
     </main>
     <script>
+      window.__APP_BUILD = '20260820-1701';
       window.__showBootError = function (message) {
         var boot = document.getElementById('boot');
         if (!boot) return;
@@ -54,7 +55,6 @@
 
       // 无论 Pages 最终发布的是 Vite 构建产物还是仓库源码，
       // FFmpeg core 在 Cache Storage 未命中时统一从 CDN 获取。
-      // main.js 仍按原来的本地 URL 作为缓存键写入，因此再次打开会直接命中本地缓存。
       (function () {
         var nativeFetch = window.fetch.bind(window);
         var cdnBase = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm/';
@@ -71,9 +71,10 @@
         };
       })();
 
-      // 兼容源码直发时的跨域 Worker，并修正日志探测命令：
-      // 旧回退命令只有 `ffmpeg -i input`，没有输出文件，会直接 Aborted()。
-      // 这里只对这一个探测命令补一个 null 输出，并只读取 1 个音频包，不做完整转码。
+      // 当前 @ffmpeg/core 在部分手机浏览器执行 ffprobe 会直接 Aborted()。
+      // 一旦发生 abort，后续 FFmpeg exec 也可能无法继续。因此这里不让 FFPROBE
+      // 真正进入 WASM，而是返回非零码，让主程序直接走 FFmpeg 日志兼容分析。
+      // 同时把旧的“只有输入没有输出”的日志探测命令补成合法 null 输出。
       (function () {
         var NativeWorker = window.Worker;
         if (!NativeWorker || typeof Proxy === 'undefined') return;
@@ -95,6 +96,20 @@
             var nativePostMessage = worker.postMessage.bind(worker);
             worker.postMessage = function (message, transfer) {
               try {
+                if (message && message.type === 'FFPROBE') {
+                  var reply = {
+                    data: {
+                      id: message.id,
+                      type: 'FFPROBE',
+                      data: 1
+                    }
+                  };
+                  setTimeout(function () {
+                    if (typeof worker.onmessage === 'function') worker.onmessage(reply);
+                  }, 0);
+                  return;
+                }
+
                 var probeArgs = message && message.type === 'EXEC' && message.data && message.data.args;
                 if (Array.isArray(probeArgs) && probeArgs.length === 3 && probeArgs[0] === '-hide_banner' && probeArgs[1] === '-i') {
                   message = Object.assign({}, message, {
