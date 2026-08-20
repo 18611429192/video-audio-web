@@ -10,6 +10,8 @@
 - 可勾选一条或多条音轨
 - 输出 MP3：VBR 高质量、128/192/256/320 kbps
 - 转换进度与 FFmpeg 日志
+- FFmpeg 引擎真实下载进度
+- FFmpeg 核心持久缓存，后续打开优先从本地缓存加载
 - 转换结果直接保存到设备
 - 手机和超大文件风险提示
 - 无后端、无数据库、视频不上传
@@ -36,7 +38,9 @@ npm run build
 
 仓库包含 GitHub Actions 工作流。推送到 `main` 后会自动构建并发布到 GitHub Pages。
 
-在线地址：`https://18611429192.github.io/video-audio-web/`
+## 缓存说明
+
+首次使用时浏览器会下载 FFmpeg WebAssembly 核心，并通过 Service Worker 写入 Cache Storage。后续再次打开网页时，同一版本的 FFmpeg 核心优先直接从本地缓存读取，不需要重新下载。升级 FFmpeg 版本时可更新 `public/sw.js` 中的缓存版本号以自动淘汰旧缓存。
 
 ## 手机使用
 
