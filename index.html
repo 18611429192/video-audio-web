@@ -71,9 +71,9 @@
         };
       })();
 
-      // 源码直发到 GitHub Pages 时，@ffmpeg/ffmpeg 会从 esm.sh 运行。
-      // 浏览器不允许页面直接创建跨域 Worker，所以只把 FFmpeg 的这个 Worker
-      // 重定向到同源的小型引导脚本；Vite 正常构建出的同源 Worker 不受影响。
+      // 兼容源码直发时的跨域 Worker，并修正日志探测命令：
+      // 旧回退命令只有 `ffmpeg -i input`，没有输出文件，会直接 Aborted()。
+      // 这里只对这一个探测命令补一个 null 输出，并只读取 1 个音频包，不做完整转码。
       (function () {
         var NativeWorker = window.Worker;
         if (!NativeWorker || typeof Proxy === 'undefined') return;
@@ -90,7 +90,23 @@
                 /\/worker\.js$/.test(parsed.pathname);
               if (isFFmpegCDNWorker) url = localFFmpegWorker;
             } catch (_) {}
-            return Reflect.construct(Target, [url, options]);
+
+            var worker = Reflect.construct(Target, [url, options]);
+            var nativePostMessage = worker.postMessage.bind(worker);
+            worker.postMessage = function (message, transfer) {
+              try {
+                var probeArgs = message && message.type === 'EXEC' && message.data && message.data.args;
+                if (Array.isArray(probeArgs) && probeArgs.length === 3 && probeArgs[0] === '-hide_banner' && probeArgs[1] === '-i') {
+                  message = Object.assign({}, message, {
+                    data: Object.assign({}, message.data, {
+                      args: probeArgs.concat(['-map', '0:a?', '-c', 'copy', '-frames:a', '1', '-f', 'null', '-'])
+                    })
+                  });
+                }
+              } catch (_) {}
+              return transfer === undefined ? nativePostMessage(message) : nativePostMessage(message, transfer);
+            };
+            return worker;
           }
         });
       })();
