@@ -36,6 +36,8 @@ npm run build
 
 仓库包含 GitHub Actions 工作流。推送到 `main` 后会自动构建并发布到 GitHub Pages。
 
+在线地址：`https://18611429192.github.io/video-audio-web/`
+
 ## 手机使用
 
 部署到 HTTPS 后，iPhone Safari 与 Android Chrome/Edge 均可打开。由于 WebAssembly 会占用设备内存，手机更适合处理中小视频。建议转换时保持页面在前台，不要锁屏。
