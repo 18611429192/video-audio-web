@@ -48,17 +48,70 @@ function setProgress(value,text) { const pct=Math.max(0,Math.min(100,Math.round(
 function resetOutput(){ resultsEl.innerHTML=''; setProgress(0,'准备中…'); logEl.textContent=''; }
 function showSizeWarning(file){ const mb=file.size/1024/1024; warning.classList.add('hidden'); if(isMobile&&mb>=500){ warning.textContent=`这段视频约 ${formatBytes(file.size)}。手机浏览器处理大文件时可能因内存不足或锁屏而中断，建议保持页面前台并优先使用电脑。`; warning.classList.remove('hidden'); } else if(!isMobile&&mb>=2048){ warning.textContent=`这段视频约 ${formatBytes(file.size)}。纯浏览器版本需要把视频交给 WebAssembly 处理，2 GB 以上文件可能消耗大量内存；超大文件建议使用桌面 FFmpeg 版本。`; warning.classList.remove('hidden'); } }
 
+async function fetchBlobWithProgress(url, label, startPct, endPct) {
+  const response = await fetch(url, { cache: 'force-cache' });
+  if (!response.ok) throw new Error(`${label} 加载失败：HTTP ${response.status}`);
+
+  const total = Number(response.headers.get('content-length')) || 0;
+  if (!response.body || !total) {
+    setProgress(startPct, `正在加载${label}…`);
+    const blob = await response.blob();
+    setProgress(endPct, `${label}加载完成`);
+    return blob;
+  }
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let loaded = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    loaded += value.byteLength;
+    const ratio = Math.min(1, loaded / total);
+    const overall = startPct + (endPct - startPct) * ratio;
+    setProgress(overall, `正在下载${label}：${formatBytes(loaded)} / ${formatBytes(total)}`);
+  }
+
+  return new Blob(chunks);
+}
+
 async function ensureFFmpeg(){
   if(ffmpegLoaded&&ffmpeg) return;
-  statusBox.classList.remove('hidden'); setProgress(.02,'正在加载转换引擎…');
-  ffmpeg=new FFmpeg();
-  ffmpeg.on('log',({message})=>{ logBuffer.push(message); if(logBuffer.length>300) logBuffer.shift(); logEl.textContent=message; });
-  ffmpeg.on('progress',({progress})=>{ if(busy&&Number.isFinite(progress)) setProgress(progress,statusText.textContent); });
-  await ffmpeg.load({
-    coreURL:new URL(`${import.meta.env.BASE_URL}ffmpeg-core/ffmpeg-core.js`,window.location.origin).href,
-    wasmURL:new URL(`${import.meta.env.BASE_URL}ffmpeg-core/ffmpeg-core.wasm`,window.location.origin).href,
-  });
-  ffmpegLoaded=true;
+  statusBox.classList.remove('hidden');
+  setProgress(.01,'正在准备转换引擎…');
+
+  const base = import.meta.env.BASE_URL;
+  const coreSourceURL = new URL(`${base}ffmpeg-core/ffmpeg-core.js`, window.location.origin).href;
+  const wasmSourceURL = new URL(`${base}ffmpeg-core/ffmpeg-core.wasm`, window.location.origin).href;
+
+  let coreObjectURL = '';
+  let wasmObjectURL = '';
+
+  try {
+    const coreBlob = await fetchBlobWithProgress(coreSourceURL, 'FFmpeg 核心脚本', .02, .12);
+    coreObjectURL = URL.createObjectURL(new Blob([coreBlob], { type: 'text/javascript' }));
+
+    const wasmBlob = await fetchBlobWithProgress(wasmSourceURL, 'FFmpeg WebAssembly 引擎', .12, .92);
+    wasmObjectURL = URL.createObjectURL(new Blob([wasmBlob], { type: 'application/wasm' }));
+
+    setProgress(.94,'下载完成，正在初始化 FFmpeg…');
+    ffmpeg=new FFmpeg();
+    ffmpeg.on('log',({message})=>{ logBuffer.push(message); if(logBuffer.length>300) logBuffer.shift(); logEl.textContent=message; });
+    ffmpeg.on('progress',({progress})=>{ if(busy&&Number.isFinite(progress)) setProgress(progress,statusText.textContent); });
+    await ffmpeg.load({ coreURL: coreObjectURL, wasmURL: wasmObjectURL });
+    ffmpegLoaded=true;
+    setProgress(1,'转换引擎已就绪');
+  } catch (err) {
+    const message = err?.message || String(err);
+    setProgress(0,'转换引擎加载失败');
+    logEl.textContent = message;
+    throw err;
+  } finally {
+    if (coreObjectURL) URL.revokeObjectURL(coreObjectURL);
+    if (wasmObjectURL) URL.revokeObjectURL(wasmObjectURL);
+  }
 }
 function parseDuration(lines){ for(const line of lines){ const m=line.match(/Duration:\s*(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)/); if(m) return Number(m[1])*3600+Number(m[2])*60+Number(m[3]); } return 0; }
 function parseTracks(lines){ const result=[]; for(const line of lines){ if(!/Stream #\d+:\d+/.test(line)||!/Audio:/.test(line)) continue; const lang=line.match(/Stream #\d+:\d+\(([^)]+)\)/)?.[1]||'未标注语言'; const streamIndex=line.match(/Stream #\d+:(\d+)/)?.[1]??'?'; const audio=line.split('Audio:')[1]?.trim()||''; const codec=audio.split(',')[0]?.trim()||'未知编码'; const sampleRate=audio.match(/(\d+)\s*Hz/)?.[1]; const channels=audio.match(/\b(mono|stereo|\d+(?:\.\d+)?)\b/i)?.[1]; const bitrate=audio.match(/(\d+)\s*kb\/s/)?.[1]; result.push({ordinal:result.length,streamIndex,lang,codec,sampleRate:sampleRate?`${sampleRate} Hz`:'',channels:channels||'',bitrate:bitrate?`${bitrate} kb/s`:''}); } return result; }
