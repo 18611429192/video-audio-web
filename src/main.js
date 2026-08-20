@@ -20,7 +20,7 @@ app.innerHTML = `
         <div id="warning" class="warning hidden"></div>
         <div class="grid">
           <div class="control"><label for="quality">MP3 音质</label><select id="quality"><option value="vbr2">智能 VBR · 高质量（推荐）</option><option value="128">128 kbps · 标准</option><option value="192">192 kbps · 高质量</option><option value="256">256 kbps · 很高</option><option value="320">320 kbps · 最高固定码率</option></select></div>
-          <div class="control"><label>处理模式</label><div style="line-height:1.55">使用 ffprobe 精确读取音轨；优先通过 WORKERFS 直接读取本地视频。</div></div>
+          <div class="control"><label>处理模式</label><div style="line-height:1.55">优先使用 ffprobe JSON；失败时自动切换内存模式或 FFmpeg 日志识别，不会因 ffprobe 单独失败而直接终止。</div></div>
         </div>
         <div id="tracks" class="tracks"></div>
         <div class="actions"><button id="convert" class="primary" disabled>转换所选音轨</button><button id="cancel" class="secondary hidden">取消</button></div>
@@ -39,9 +39,9 @@ const percent = el('percent'), bar = el('bar'), progressTrack = el('progressTrac
 
 const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
 const MOUNT_POINT = '/input';
-const ENGINE_CACHE = 'video-audio-web-ffmpeg-v3-core-0.12.10';
-const CACHE_PREFIX = 'video-audio-web-ffmpeg-';
 const CORE_VERSION = '0.12.10';
+const ENGINE_CACHE = 'video-audio-web-ffmpeg-v4-core-0.12.10';
+const CACHE_PREFIX = 'video-audio-web-ffmpeg-';
 const MOBILE_MEMORY_FALLBACK_LIMIT = 300 * 1024 * 1024;
 const DESKTOP_MEMORY_FALLBACK_LIMIT = 1536 * 1024 * 1024;
 
@@ -54,6 +54,7 @@ let inputPath = '';
 let inputMode = '';
 let logBuffer = [];
 let cacheSource = '';
+let analysisMethod = '';
 
 function formatBytes(bytes) {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
@@ -69,6 +70,7 @@ function formatDuration(sec) {
 function safeStem(name) { return (name.replace(/\.[^.]+$/, '') || 'audio').replace(/[\\/:*?"<>|]/g, '_'); }
 function safeExt(name) { const m = name.match(/\.([a-zA-Z0-9]{1,8})$/); return m ? `.${m[1].toLowerCase()}` : '.bin'; }
 function escapeHtml(value) { return String(value).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+function recentLogs(max = 12) { return logBuffer.slice(-max).join('\n').trim(); }
 
 function setProgress(value, text, label) {
   progressTrack.classList.remove('indeterminate');
@@ -77,7 +79,7 @@ function setProgress(value, text, label) {
   percent.textContent = label || `${pct}%`;
   if (text) statusText.textContent = text;
 }
-function setIndeterminate(text, label = '下载中') {
+function setIndeterminate(text, label = '处理中') {
   progressTrack.classList.add('indeterminate');
   bar.style.width = '';
   percent.textContent = label;
@@ -103,16 +105,19 @@ function showSizeWarning(file) {
   }
 }
 
-function getCoreURLs() {
-  const viteBase = typeof import.meta.env !== 'undefined' ? import.meta.env.BASE_URL : '';
-  if (viteBase) {
-    return {
-      core: new URL(`${viteBase}ffmpeg-core/ffmpeg-core.js`, window.location.origin).href,
-      wasm: new URL(`${viteBase}ffmpeg-core/ffmpeg-core.wasm`, window.location.origin).href,
-    };
-  }
+function getCoreAssets() {
   const cdnBase = `https://cdn.jsdelivr.net/npm/@ffmpeg/core@${CORE_VERSION}/dist/esm`;
-  return { core: `${cdnBase}/ffmpeg-core.js`, wasm: `${cdnBase}/ffmpeg-core.wasm` };
+  const base = new URL('./', window.location.href).href;
+  return [
+    { key: 'core', sourceURL: `${cdnBase}/ffmpeg-core.js`, cacheKey: new URL('__ffmpeg-cache__/ffmpeg-core.js', base).href, type: 'text/javascript' },
+    { key: 'wasm', sourceURL: `${cdnBase}/ffmpeg-core.wasm`, cacheKey: new URL('__ffmpeg-cache__/ffmpeg-core.wasm', base).href, type: 'application/wasm' },
+  ];
+}
+
+function getClassWorkerURL() {
+  const viteBase = typeof import.meta.env !== 'undefined' ? import.meta.env.BASE_URL : '';
+  if (viteBase) return new URL(`${viteBase}ffmpeg-class-worker.js`, window.location.origin).href;
+  return new URL('./ffmpeg-class-worker.js', import.meta.url).href;
 }
 
 async function openEngineCache() {
@@ -129,18 +134,14 @@ async function openEngineCache() {
 }
 
 async function loadEngineAssets() {
-  const urls = getCoreURLs();
-  const assets = [
-    { key: 'core', url: urls.core, type: 'text/javascript' },
-    { key: 'wasm', url: urls.wasm, type: 'application/wasm' },
-  ];
+  const assets = getCoreAssets();
   const cache = await openEngineCache();
   const blobs = {};
   const missing = [];
 
   for (const asset of assets) {
     let cached = null;
-    try { cached = cache ? await cache.match(asset.url) : null; } catch {}
+    try { cached = cache ? await cache.match(asset.cacheKey) : null; } catch {}
     if (cached) {
       const blob = await cached.blob();
       if (blob.size > 0) {
@@ -158,28 +159,17 @@ async function loadEngineAssets() {
   }
 
   cacheSource = 'network';
-  const responses = await Promise.all(missing.map(async (asset) => {
-    const response = await fetch(asset.url, { cache: 'no-store' });
-    if (!response.ok) throw new Error(`转换引擎下载失败：${asset.url}（HTTP ${response.status}）`);
-    return { asset, response };
-  }));
-
-  const sameOrigin = responses.every(({ asset }) => new URL(asset.url, location.href).origin === location.origin);
-  const lengths = responses.map(({ response }) => Number(response.headers.get('content-length')) || 0);
-  const encoded = responses.some(({ response }) => Boolean(response.headers.get('content-encoding')));
-  const exactTotal = sameOrigin && !encoded && lengths.every((n) => n > 0) ? lengths.reduce((a, b) => a + b, 0) : 0;
   let downloaded = 0;
+  setIndeterminate('正在下载转换引擎：已接收 0 B', '下载中');
 
-  if (exactTotal) setProgress(0, `正在下载转换引擎：0 B / ${formatBytes(exactTotal)}`);
-  else setIndeterminate('正在下载转换引擎：已接收 0 B');
-
-  await Promise.all(responses.map(async ({ asset, response }) => {
+  for (const asset of missing) {
+    const response = await fetch(asset.sourceURL, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`转换引擎下载失败：${asset.sourceURL}（HTTP ${response.status}）`);
     let blob;
     if (!response.body) {
       blob = await response.blob();
       downloaded += blob.size;
-      if (exactTotal) setProgress(Math.min(1, downloaded / exactTotal), `正在下载转换引擎：${formatBytes(downloaded)} / ${formatBytes(exactTotal)}`);
-      else setIndeterminate(`正在下载转换引擎：已接收 ${formatBytes(downloaded)}`);
+      setIndeterminate(`正在下载转换引擎：已接收 ${formatBytes(downloaded)}`, '下载中');
     } else {
       const reader = response.body.getReader();
       const chunks = [];
@@ -188,21 +178,27 @@ async function loadEngineAssets() {
         if (done) break;
         chunks.push(value);
         downloaded += value.byteLength;
-        if (exactTotal) setProgress(Math.min(1, downloaded / exactTotal), `正在下载转换引擎：${formatBytes(downloaded)} / ${formatBytes(exactTotal)}`);
-        else setIndeterminate(`正在下载转换引擎：已接收 ${formatBytes(downloaded)}`);
+        setIndeterminate(`正在下载转换引擎：已接收 ${formatBytes(downloaded)}`, '下载中');
       }
       blob = new Blob(chunks, { type: asset.type });
     }
     blobs[asset.key] = blob;
     if (cache) {
       try {
-        await cache.put(asset.url, new Response(blob, { headers: { 'Content-Type': asset.type, 'Content-Length': String(blob.size) } }));
+        await cache.put(asset.cacheKey, new Response(blob, { headers: { 'Content-Type': asset.type } }));
       } catch (error) {
         console.warn('写入 FFmpeg 缓存失败', error);
       }
     }
-  }));
+  }
 
+  for (const asset of assets) {
+    if (!blobs[asset.key] && cache) {
+      const cached = await cache.match(asset.cacheKey);
+      if (cached) blobs[asset.key] = await cached.blob();
+    }
+  }
+  if (!blobs.core || !blobs.wasm) throw new Error('转换引擎缓存不完整，请刷新页面后重试。');
   setProgress(1, `下载完成（${formatBytes(downloaded)}），正在初始化 FFmpeg…`, '100%');
   return blobs;
 }
@@ -211,27 +207,25 @@ async function ensureFFmpeg() {
   if (ffmpegLoaded && ffmpeg) return;
   statusBox.classList.remove('hidden');
   setProgress(0, '正在准备转换引擎…');
-
   let coreObjectURL = '';
   let wasmObjectURL = '';
   try {
     const assets = await loadEngineAssets();
     coreObjectURL = URL.createObjectURL(new Blob([assets.core], { type: 'text/javascript' }));
     wasmObjectURL = URL.createObjectURL(new Blob([assets.wasm], { type: 'application/wasm' }));
-
-    if (cacheSource === 'local') setProgress(1, '本地缓存已读取，正在初始化 FFmpeg…', '已缓存');
-    else setProgress(1, '下载完成，正在初始化 FFmpeg…', '100%');
-
     ffmpeg = new FFmpeg();
     ffmpeg.on('log', ({ message }) => {
       logBuffer.push(message);
-      if (logBuffer.length > 400) logBuffer.shift();
+      if (logBuffer.length > 500) logBuffer.shift();
       logEl.textContent = message;
     });
     ffmpeg.on('progress', ({ progress }) => {
-      if (busy && Number.isFinite(progress)) setProgress(progress, statusText.textContent);
+      if (busy && Number.isFinite(progress) && statusText.textContent.includes('转换')) setProgress(progress, statusText.textContent);
     });
-    await ffmpeg.load({ coreURL: coreObjectURL, wasmURL: wasmObjectURL });
+    const classWorkerURL = getClassWorkerURL();
+    if (cacheSource === 'local') setProgress(1, '本地缓存已读取，正在初始化 FFmpeg…', '已缓存');
+    else setProgress(1, '下载完成，正在初始化 FFmpeg…', '100%');
+    await ffmpeg.load({ classWorkerURL, coreURL: coreObjectURL, wasmURL: wasmObjectURL });
     ffmpegLoaded = true;
     setProgress(1, cacheSource === 'local' ? '转换引擎已就绪（来自本地缓存）' : '转换引擎已就绪');
   } catch (error) {
@@ -259,7 +253,6 @@ async function cleanupInput() {
 async function attachInputFile(file) {
   await cleanupInput();
   setProgress(0, '正在挂载视频文件…');
-
   try {
     await ffmpeg.createDir(MOUNT_POINT).catch(() => {});
     const mounted = await ffmpeg.mount(FFFSType.WORKERFS, { files: [file] }, MOUNT_POINT);
@@ -269,50 +262,30 @@ async function attachInputFile(file) {
     setProgress(1, '视频已直接挂载，准备分析…');
     return;
   } catch (mountError) {
-    await ffmpeg.unmount(MOUNT_POINT).catch(() => {});
-    await ffmpeg.deleteDir(MOUNT_POINT).catch(() => {});
     console.warn('WORKERFS 挂载失败，尝试内存模式', mountError);
-
-    const limit = isMobile ? MOBILE_MEMORY_FALLBACK_LIMIT : DESKTOP_MEMORY_FALLBACK_LIMIT;
-    if (file.size > limit) {
-      throw new Error(`浏览器无法直接挂载这个文件，且文件 ${formatBytes(file.size)} 过大，不适合退回整文件内存读取。请换最新版浏览器或在电脑端处理。`);
-    }
-
-    inputPath = `input${safeExt(file.name)}`;
-    inputMode = 'memfs';
-    setIndeterminate(`直接挂载不可用，正在以内存兼容模式读取 ${formatBytes(file.size)}…`, '读取中');
-    await ffmpeg.writeFile(inputPath, await fetchFile(file));
-    setProgress(1, '视频读取完成，准备分析…');
+    await switchInputToMemory(file, '直接挂载不可用');
   }
 }
 
-async function probeInput() {
-  const probePath = 'probe-result.json';
-  await ffmpeg.deleteFile(probePath).catch(() => {});
-  setIndeterminate('正在用 ffprobe 读取容器和音轨信息…', '分析中');
-  const code = await ffmpeg.ffprobe([
-    '-v', 'error',
-    '-show_entries', 'format=duration,format_name:stream=index,codec_type,codec_name,sample_rate,channels,channel_layout,bit_rate,duration:stream_tags=language,title',
-    '-of', 'json',
-    inputPath,
-    '-o', probePath,
-  ]);
-  if (code !== 0) throw new Error(`ffprobe 无法解析该视频（返回码 ${code}）`);
+async function switchInputToMemory(file, reason = '正在切换兼容模式') {
+  const limit = isMobile ? MOBILE_MEMORY_FALLBACK_LIMIT : DESKTOP_MEMORY_FALLBACK_LIMIT;
+  if (file.size > limit) throw new Error(`${reason}，且文件 ${formatBytes(file.size)} 过大，不适合整文件读入浏览器内存。请在电脑端处理或使用更小的视频。`);
+  await cleanupInput();
+  inputPath = `input${safeExt(file.name)}`;
+  inputMode = 'memfs';
+  setIndeterminate(`${reason}，正在以内存兼容模式读取 ${formatBytes(file.size)}…`, '读取中');
+  await ffmpeg.writeFile(inputPath, await fetchFile(file));
+  setProgress(1, '视频读取完成，准备分析…');
+}
 
-  const raw = await ffmpeg.readFile(probePath, 'utf8');
-  await ffmpeg.deleteFile(probePath).catch(() => {});
-  const text = typeof raw === 'string' ? raw : new TextDecoder().decode(raw);
-  let info;
-  try { info = JSON.parse(text); } catch { throw new Error('ffprobe 已运行，但返回的媒体信息无法解析。'); }
-
-  const streams = Array.isArray(info.streams) ? info.streams : [];
+function parseProbeInfo(info) {
+  const streams = Array.isArray(info?.streams) ? info.streams : [];
   const audioStreams = streams.filter((s) => s.codec_type === 'audio');
-  const durationCandidates = [Number(info.format?.duration), ...streams.map((s) => Number(s.duration))].filter((n) => Number.isFinite(n) && n > 0);
+  const durationCandidates = [Number(info?.format?.duration), ...streams.map((s) => Number(s.duration))].filter((n) => Number.isFinite(n) && n > 0);
   const duration = durationCandidates.length ? Math.max(...durationCandidates) : 0;
-
   return {
     duration,
-    formatName: info.format?.format_name || '',
+    formatName: info?.format?.format_name || '',
     tracks: audioStreams.map((s, ordinal) => ({
       ordinal,
       streamIndex: Number(s.index),
@@ -322,14 +295,121 @@ async function probeInput() {
       sampleRate: s.sample_rate ? `${s.sample_rate} Hz` : '',
       channels: Number.isFinite(Number(s.channels)) ? `${s.channels} ch` : '',
       channelLayout: s.channel_layout || '',
-      bitrate: s.bit_rate ? `${Math.round(Number(s.bit_rate) / 1000)} kb/s` : '',
+      bitrate: s.bit_rate && Number.isFinite(Number(s.bit_rate)) ? `${Math.round(Number(s.bit_rate) / 1000)} kb/s` : '',
     })).filter((t) => Number.isFinite(t.streamIndex)),
   };
 }
 
+async function probeInputJSON() {
+  const probePath = 'probe-result.json';
+  await ffmpeg.deleteFile(probePath).catch(() => {});
+  logBuffer = [];
+  setIndeterminate('正在用 ffprobe 读取容器和音轨信息…', '分析中');
+  const code = await ffmpeg.ffprobe([
+    '-v', 'error',
+    '-show_streams',
+    '-show_format',
+    '-of', 'json',
+    inputPath,
+    '-o', probePath,
+  ]);
+  if (code !== 0) {
+    const details = recentLogs();
+    throw new Error(`ffprobe 返回码 ${code}${details ? `\n${details}` : ''}`);
+  }
+  const raw = await ffmpeg.readFile(probePath, 'utf8');
+  await ffmpeg.deleteFile(probePath).catch(() => {});
+  const text = typeof raw === 'string' ? raw : new TextDecoder().decode(raw);
+  let info;
+  try { info = JSON.parse(text); } catch { throw new Error('ffprobe 已运行成功，但返回的 JSON 无法解析。'); }
+  analysisMethod = 'ffprobe JSON';
+  return parseProbeInfo(info);
+}
+
+function parseDurationFromLogs(lines) {
+  for (const line of lines) {
+    const m = line.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/i);
+    if (m) return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+  }
+  return 0;
+}
+
+function parseTracksFromLogs(lines) {
+  const tracks = [];
+  for (const line of lines) {
+    if (!/Stream #0:\d+/i.test(line) || !/Audio:/i.test(line)) continue;
+    const head = line.match(/Stream #0:(\d+)(?:\[[^\]]+\])?(?:\(([^)]+)\))?.*?Audio:\s*(.+)$/i);
+    if (!head) continue;
+    const streamIndex = Number(head[1]);
+    const lang = head[2] || '未标注语言';
+    const audio = head[3].trim();
+    const parts = audio.split(',').map((part) => part.trim());
+    const codec = parts[0] || '未知编码';
+    const samplePos = parts.findIndex((part) => /\d+\s*Hz/i.test(part));
+    const sampleRate = audio.match(/(\d+)\s*Hz/i)?.[1];
+    const channelLayout = samplePos >= 0 && parts[samplePos + 1] ? parts[samplePos + 1] : '';
+    const bitrate = audio.match(/(\d+(?:\.\d+)?)\s*kb\/s/i)?.[1];
+    if (!Number.isFinite(streamIndex)) continue;
+    tracks.push({
+      ordinal: tracks.length,
+      streamIndex,
+      lang,
+      title: '',
+      codec,
+      sampleRate: sampleRate ? `${sampleRate} Hz` : '',
+      channels: '',
+      channelLayout,
+      bitrate: bitrate ? `${Math.round(Number(bitrate))} kb/s` : '',
+    });
+  }
+  return tracks;
+}
+
+async function probeInputFromFFmpegLogs(previousError) {
+  logBuffer = [];
+  setIndeterminate('ffprobe 未能完成，正在改用 FFmpeg 日志识别音轨…', '兼容分析');
+  await ffmpeg.exec(['-hide_banner', '-i', inputPath]).catch(() => {});
+  const lines = [...logBuffer];
+  const tracks = parseTracksFromLogs(lines);
+  const duration = parseDurationFromLogs(lines);
+  const inputLine = lines.find((line) => /Input #0,/i.test(line)) || '';
+  const formatName = inputLine.match(/Input #0,\s*(.+?),\s*from\s/i)?.[1] || 'FFmpeg 日志识别';
+  if (!tracks.length && !inputLine) {
+    const details = recentLogs(20);
+    throw new Error(`ffprobe 和 FFmpeg 日志分析都失败。${previousError ? `\n首次错误：${previousError.message}` : ''}${details ? `\n${details}` : ''}`);
+  }
+  analysisMethod = 'FFmpeg 日志兼容识别';
+  return { duration, formatName, tracks };
+}
+
+async function analyzeInput(file) {
+  let firstError = null;
+  try {
+    return await probeInputJSON();
+  } catch (error) {
+    firstError = error;
+    console.warn('ffprobe 首次失败', error);
+  }
+
+  if (inputMode === 'workerfs') {
+    const limit = isMobile ? MOBILE_MEMORY_FALLBACK_LIMIT : DESKTOP_MEMORY_FALLBACK_LIMIT;
+    if (file.size <= limit) {
+      try {
+        await switchInputToMemory(file, '直接挂载下 ffprobe 未成功');
+        return await probeInputJSON();
+      } catch (error) {
+        console.warn('内存模式 ffprobe 仍失败', error);
+        firstError = error;
+      }
+    }
+  }
+
+  return await probeInputFromFFmpegLogs(firstError);
+}
+
 function renderTracks(tracks) {
   if (!tracks.length) {
-    tracksEl.innerHTML = '<div class="warning">ffprobe 成功读取了这个文件，但没有发现音频流。视频可能确实不含音频，或该音轨类型不在当前 FFmpeg WebAssembly 构建中。</div>';
+    tracksEl.innerHTML = '<div class="warning">已经读取到媒体文件，但没有发现音频流。视频可能确实不含音频，或当前 FFmpeg WebAssembly 构建不支持该音轨。</div>';
     convertBtn.disabled = true;
     return;
   }
@@ -344,12 +424,10 @@ function renderTracks(tracks) {
 function classifyAnalysisError(error, file) {
   const message = error?.message || String(error);
   const lower = message.toLowerCase();
-  if (/memory|out of bounds|allocation|array buffer|quota|oom/.test(lower)) {
-    return `分析失败：浏览器可用内存不足。文件大小为 ${formatBytes(file.size)}。手机端建议关闭其他页面后重试，或在电脑端处理。\n${message}`;
-  }
+  if (/memory|out of bounds|allocation|array buffer|quota|oom/.test(lower)) return `分析失败：浏览器可用内存不足。文件大小为 ${formatBytes(file.size)}。手机端建议关闭其他页面后重试，或在电脑端处理。\n${message}`;
   if (/mount|workerfs/.test(lower)) return `分析失败：浏览器无法直接挂载该视频文件。\n${message}`;
-  if (/ffprobe|invalid data|moov atom|format/.test(lower)) return `分析失败：FFmpeg 无法解析该视频容器或媒体结构。\n${message}`;
-  if (/fetch|network|http|engine/.test(lower)) return `分析失败：转换引擎或资源加载异常。\n${message}`;
+  if (/fetch|network|http|worker|engine/.test(lower)) return `分析失败：转换引擎或资源加载异常。\n${message}`;
+  if (/ffprobe|invalid data|moov atom|format|日志分析/.test(lower)) return `分析失败：FFmpeg 无法解析该视频容器或媒体结构。\n${message}`;
   return `无法分析这个视频：${message}`;
 }
 
@@ -357,6 +435,7 @@ async function loadFile(file) {
   if (!file || busy) return;
   currentFile = file;
   currentTracks = [];
+  analysisMethod = '';
   panel.classList.remove('hidden');
   fileName.textContent = file.name;
   fileMeta.textContent = `${formatBytes(file.size)} · 正在准备分析…`;
@@ -364,24 +443,22 @@ async function loadFile(file) {
   tracksEl.innerHTML = '';
   resetOutput();
   convertBtn.disabled = true;
-
   try {
     busy = true;
     statusBox.classList.remove('hidden');
     cancelBtn.classList.remove('hidden');
     await ensureFFmpeg();
     await attachInputFile(file);
-    const media = await probeInput();
+    const media = await analyzeInput(file);
     currentTracks = media.tracks;
-    fileMeta.textContent = `${formatBytes(file.size)} · ${formatDuration(media.duration)} · ${media.formatName || '未知容器'} · ${media.tracks.length} 条音轨 · ${inputMode === 'workerfs' ? '直接挂载' : '内存兼容模式'}`;
+    fileMeta.textContent = `${formatBytes(file.size)} · ${formatDuration(media.duration)} · ${media.formatName || '未知容器'} · ${media.tracks.length} 条音轨 · ${inputMode === 'workerfs' ? '直接挂载' : '内存兼容模式'} · ${analysisMethod}`;
     renderTracks(media.tracks);
     setProgress(1, '分析完成');
   } catch (error) {
     console.error(error);
     statusText.textContent = '分析失败';
-    const detail = classifyAnalysisError(error, file);
     logEl.textContent = error?.message || String(error);
-    showWarning(detail);
+    showWarning(classifyAnalysisError(error, file));
     await cleanupInput().catch(() => {});
   } finally {
     busy = false;
@@ -395,13 +472,11 @@ async function convertSelected() {
   const selectedIndexes = new Set([...document.querySelectorAll('input[name="track"]:checked')].map((x) => Number(x.value)));
   const selected = currentTracks.filter((track) => selectedIndexes.has(track.streamIndex));
   if (!currentFile || !selected.length || busy || !inputPath) return;
-
   busy = true;
   resetOutput();
   statusBox.classList.remove('hidden');
   cancelBtn.classList.remove('hidden');
   convertBtn.disabled = true;
-
   try {
     await ensureFFmpeg();
     const stem = safeStem(currentFile.name);
@@ -419,9 +494,9 @@ async function convertSelected() {
         '-map_metadata', '-1',
         '-y', outputName,
       ]);
-      if (code !== 0) throw new Error(`音轨 ${track.ordinal + 1} 转换失败（FFmpeg 返回码 ${code}）`);
+      if (code !== 0) throw new Error(`音轨 ${track.ordinal + 1} 转换失败（FFmpeg 返回码 ${code}）${recentLogs() ? `\n${recentLogs()}` : ''}`);
       const data = await ffmpeg.readFile(outputName);
-      const blob = new Blob([data.buffer], { type: 'audio/mpeg' });
+      const blob = new Blob([data], { type: 'audio/mpeg' });
       const url = URL.createObjectURL(blob);
       const item = document.createElement('div');
       item.className = 'result';
