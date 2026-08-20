@@ -52,6 +52,25 @@
         }
       }, 8000);
 
+      // 无论 Pages 最终发布的是 Vite 构建产物还是仓库源码，
+      // FFmpeg core 在 Cache Storage 未命中时统一从 CDN 获取。
+      // main.js 仍按原来的本地 URL 作为缓存键写入，因此再次打开会直接命中本地缓存。
+      (function () {
+        var nativeFetch = window.fetch.bind(window);
+        var cdnBase = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm/';
+        window.fetch = function (input, init) {
+          var rawUrl = typeof input === 'string' ? input : (input && input.url ? input.url : String(input));
+          try {
+            var parsed = new URL(rawUrl, window.location.href);
+            if (parsed.origin === window.location.origin) {
+              var match = parsed.pathname.match(/\/ffmpeg-core\/(ffmpeg-core\.(?:js|wasm))$/);
+              if (match) return nativeFetch(cdnBase + match[1], init);
+            }
+          } catch (_) {}
+          return nativeFetch(input, init);
+        };
+      })();
+
       // 源码直发到 GitHub Pages 时，@ffmpeg/ffmpeg 会从 esm.sh 运行。
       // 浏览器不允许页面直接创建跨域 Worker，所以只把 FFmpeg 的这个 Worker
       // 重定向到同源的小型引导脚本；Vite 正常构建出的同源 Worker 不受影响。
