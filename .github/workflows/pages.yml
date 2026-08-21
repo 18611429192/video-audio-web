@@ -1,8 +1,8 @@
-name: Deploy to GitHub Pages
+name: Build and Deploy Single HTML
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/standalone-single-html]
   workflow_dispatch:
 
 permissions:
@@ -11,7 +11,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: pages
+  group: pages-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -31,31 +31,44 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      - name: Verify FFmpeg core assets
+      - name: Verify embedded FFmpeg source assets
         run: |
-          test -f node_modules/@ffmpeg/core/dist/esm/ffmpeg-core.js
-          test -f node_modules/@ffmpeg/core/dist/esm/ffmpeg-core.wasm
-          ls -lh node_modules/@ffmpeg/core/dist/esm/ffmpeg-core.*
+          test -f node_modules/@ffmpeg/core/dist/umd/ffmpeg-core.js
+          test -f node_modules/@ffmpeg/core/dist/umd/ffmpeg-core.wasm
+          ls -lh node_modules/@ffmpeg/core/dist/umd/ffmpeg-core.*
 
-      - name: Build site
+      - name: Build standalone HTML
         run: npm run build
 
-      - name: Verify build output
+      - name: Verify single-file output
         run: |
           test -f dist/index.html
-          test -f dist/ffmpeg-core/ffmpeg-core.js
-          test -f dist/ffmpeg-core/ffmpeg-core.wasm
-          find dist -maxdepth 2 -type f -printf '%p %k KB\n' | sort
+          test "$(find dist -type f | wc -l)" -eq 1
+          test "$(stat -c%s dist/index.html)" -gt 30000000
+          grep -q 'id="ffmpeg-core-wasm-b64"' dist/index.html
+          grep -q 'id="ffmpeg-core-js-b64"' dist/index.html
+          echo "Standalone file:"
+          ls -lh dist/index.html
+
+      - name: Upload offline HTML artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-audio-offline-single-html
+          path: dist/index.html
+          retention-days: 90
 
       - name: Configure Pages
+        if: github.ref == 'refs/heads/main'
         uses: actions/configure-pages@v5
 
       - name: Upload Pages artifact
+        if: github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@v3
         with:
           path: dist
 
   deploy:
+    if: github.ref == 'refs/heads/main'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
