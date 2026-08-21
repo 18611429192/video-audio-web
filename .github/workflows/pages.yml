@@ -48,7 +48,10 @@ jobs:
           test "$(find dist -type f | wc -l)" -eq 1
           test "$(stat -c%s dist/index.html)" -gt 30000000
           grep -q 'id="ffmpeg-core-wasm-b64"' dist/index.html
-          grep -q 'id="ffmpeg-core-js-b64"' dist/index.html
+          grep -q '__INLINE_FFMPEG_CORE_DIRECT__' dist/index.html
+          ! grep -q 'id="ffmpeg-core-js-b64"' dist/index.html
+          ! grep -q 'importScripts(coreURL)' dist/index.html
+          ! grep -q 'fetch(wasmURL)' dist/index.html
           echo "Standalone file:"
           ls -lh dist/index.html
 
