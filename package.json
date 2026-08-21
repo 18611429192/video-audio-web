@@ -1,7 +1,7 @@
 {
   "name": "video-audio-web",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Single-file offline browser tool for extracting video audio tracks and converting them to MP3 with FFmpeg WebAssembly.",
   "type": "module",
   "scripts": {
