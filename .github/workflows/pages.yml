@@ -2,7 +2,7 @@ name: Build and Deploy Single HTML
 
 on:
   push:
-    branches: [main, feature/standalone-single-html]
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
