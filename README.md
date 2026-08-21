@@ -1,51 +1,92 @@
-# 视频音频分离 · 纯网页 MP3 转换器
+# 视频音频分离 · 单文件离线版
 
-这是一个完全在浏览器中运行的静态网页工具。视频文件不会上传到服务器，FFmpeg WebAssembly 在用户设备本地完成音轨识别与 MP3 转换。
+这是一个完全在浏览器本地运行的视频音轨提取与 MP3 转换工具。
+
+最终发布物只有 **一个 `index.html`**。页面、样式、FFmpeg Worker、`ffmpeg-core.js` 和约 30.7 MB 的 WebAssembly 核心都内置在这个 HTML 中，因此可以离线保存、复制和分发，不依赖 CDN、服务器、Service Worker 或其他静态文件。
+
+## 在线使用
+
+GitHub Pages：
+
+https://18611429192.github.io/video-audio-web/
+
+Pages 与离线文件使用的是同一套单文件构建产物。
 
 ## 功能
 
-- 手机 / 电脑响应式界面
+- 手机和电脑浏览器均可使用
 - 拖拽或选择本地视频
-- 自动分析并列出多条音轨
-- 可勾选一条或多条音轨
-- 输出 MP3：VBR 高质量、128/192/256/320 kbps
-- 转换进度与 FFmpeg 日志
-- FFmpeg 引擎真实下载进度
-- FFmpeg 核心持久缓存，后续打开优先从本地缓存加载
-- 转换结果直接保存到设备
-- 手机和超大文件风险提示
-- 无后端、无数据库、视频不上传
+- 支持 FFmpeg 能识别的常见视频容器和音频编码
+- 自动识别并列出多条音轨
+- 可选择一条或多条音轨转换
+- 输出 MP3：VBR 高质量、128 / 192 / 256 / 320 kbps
+- 优先使用 WORKERFS 直接读取本地文件，减少手机端大文件内存复制
+- 音轨分析使用 FFmpeg 媒体日志，避免部分移动浏览器中 ffprobe 的异常
+- 显示引擎展开、分析和转换进度
+- 视频与音频数据不会上传到服务器
 
-## 本地开发
+## 离线使用
 
-需要 Node.js 20+。
+GitHub Actions 每次构建都会上传一个名为 `video-audio-offline-single-html` 的 artifact，其中只有最终的 `index.html`。
 
-```bash
-npm install
-npm run dev
+下载后可以把文件改名为任意名称，例如：
+
+```text
+video-audio-offline.html
 ```
 
-## 构建
+然后直接用现代浏览器打开即可。文件约 41 MB，因为 FFmpeg WebAssembly 已完整内置。
+
+> 手机文件管理器自带的“网页预览”可能不支持 Blob Worker。遇到这种情况，请选择 Chrome、Edge、Safari 等正式浏览器打开 HTML 文件。
+
+## 从源码构建
+
+需要 Node.js 22 或更高版本。
 
 ```bash
 npm install
 npm run build
 ```
 
-构建结果位于 `dist/`。
+构建结果：
 
-## GitHub Pages
+```text
+dist/
+└── index.html
+```
 
-仓库包含 GitHub Actions 工作流。推送到 `main` 后会自动构建并发布到 GitHub Pages。
+构建脚本会从 `@ffmpeg/core` 读取 UMD 版 `ffmpeg-core.js` 和 `ffmpeg-core.wasm`，将其编码并嵌入最终 HTML，同时内嵌页面 CSS、应用代码和 Blob Worker。
 
-## 缓存说明
+生成的 `dist/index.html` 不提交到仓库，以避免每次修改都产生约 41 MB 的大文件 diff；GitHub Actions 会构建并发布这个单文件产物。
 
-首次使用时浏览器会下载 FFmpeg WebAssembly 核心，并通过 Service Worker 写入 Cache Storage。后续再次打开网页时，同一版本的 FFmpeg 核心优先直接从本地缓存读取，不需要重新下载。升级 FFmpeg 版本时可更新 `public/sw.js` 中的缓存版本号以自动淘汰旧缓存。
+## 仓库结构
 
-## 手机使用
+```text
+.github/workflows/pages.yml   GitHub Pages / 离线 artifact 构建与发布
+scripts/build-standalone.mjs  单 HTML 构建器
+src/standalone-app.js         浏览器端应用逻辑
+src/style.css                 页面样式
+package.json                  构建依赖与命令
+```
 
-部署到 HTTPS 后，iPhone Safari 与 Android Chrome/Edge 均可打开。由于 WebAssembly 会占用设备内存，手机更适合处理中小视频。建议转换时保持页面在前台，不要锁屏。
+当前运行架构不再使用 Vite、外部 Worker、Service Worker 或运行时 CDN。
+
+## GitHub Pages 发布
+
+推送到 `main` 后，GitHub Actions 会：
+
+1. 安装 `@ffmpeg/core`。
+2. 构建单个 `dist/index.html`。
+3. 校验 `dist` 中只有这一个文件，并确认 FFmpeg JS / WASM 已内嵌。
+4. 上传离线 HTML artifact。
+5. 将相同的 `dist` 发布到 GitHub Pages。
+
+Pull Request 也会执行同样的单文件构建校验，但不会部署 Pages。
+
+## 隐私
+
+所有视频分析、音轨读取和 MP3 转换都在当前浏览器进程中完成。工具没有后端接口，不会把用户选择的视频上传到服务器。
 
 ## 当前限制
 
-纯浏览器版会把视频数据交给 WebAssembly 虚拟文件系统，因此几 GB 甚至几十 GB 的视频可能因浏览器或设备内存限制失败。此场景更适合原生桌面 FFmpeg。
+FFmpeg WebAssembly 仍受浏览器内存、文件系统和移动设备资源限制。单文件版会优先直接挂载本地视频，但超大视频、低内存设备或浏览器主动回收页面时仍可能处理失败。对于数 GB 以上的视频，桌面原生 FFmpeg 通常更稳定。
