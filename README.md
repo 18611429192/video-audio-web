@@ -37,7 +37,9 @@ video-audio-offline.html
 
 然后直接用现代浏览器打开即可。文件约 41 MB，因为 FFmpeg WebAssembly 已完整内置。
 
-> 手机文件管理器自带的“网页预览”可能不支持 Blob Worker。遇到这种情况，请选择 Chrome、Edge、Safari 等正式浏览器打开 HTML 文件。
+离线版针对 `file://` 场景做了专门处理：FFmpeg core JavaScript 直接编译进 Blob Worker 本身，WASM 二进制由主页面解码后通过 `postMessage` 直接传给 Worker。运行时不会再让 Worker 调用 `importScripts(blob:null/...)`，也不会在 Worker 中 `fetch(blob:null/...)`，因此可避开部分浏览器对不透明 `file://` Origin 的二级 Blob 加载限制。
+
+> 手机文件管理器自带的“网页预览”仍可能完全禁用 Web Worker。遇到这种情况，请选择 Chrome、Edge、Safari 等正式浏览器打开 HTML 文件。
 
 ## 从源码构建
 
@@ -55,7 +57,7 @@ dist/
 └── index.html
 ```
 
-构建脚本会从 `@ffmpeg/core` 读取 UMD 版 `ffmpeg-core.js` 和 `ffmpeg-core.wasm`，将其编码并嵌入最终 HTML，同时内嵌页面 CSS、应用代码和 Blob Worker。
+构建脚本会从 `@ffmpeg/core` 读取 UMD 版 `ffmpeg-core.js` 和 `ffmpeg-core.wasm`：core JavaScript 直接嵌入 Worker 源码，WASM 编码后嵌入 HTML；页面 CSS、应用逻辑和 Worker 也全部内联。
 
 生成的 `dist/index.html` 不提交到仓库，以避免每次修改都产生约 41 MB 的大文件 diff；GitHub Actions 会构建并发布这个单文件产物。
 
@@ -77,9 +79,10 @@ package.json                  构建依赖与命令
 
 1. 安装 `@ffmpeg/core`。
 2. 构建单个 `dist/index.html`。
-3. 校验 `dist` 中只有这一个文件，并确认 FFmpeg JS / WASM 已内嵌。
-4. 上传离线 HTML artifact。
-5. 将相同的 `dist` 发布到 GitHub Pages。
+3. 校验 `dist` 中只有这一个文件，并确认 WASM 和 FFmpeg core Worker 已内嵌。
+4. 校验最终 HTML 不再包含旧的 `importScripts(coreURL)` / `fetch(wasmURL)` 二级 Blob 加载方式。
+5. 上传离线 HTML artifact。
+6. 将相同的 `dist` 发布到 GitHub Pages。
 
 Pull Request 也会执行同样的单文件构建校验，但不会部署 Pages。
 
