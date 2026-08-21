@@ -6,18 +6,16 @@ const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
 const app = await readFile(resolve(root, 'src/standalone-app.js'), 'utf8');
 const coreJS = await readFile(resolve(root, 'node_modules/@ffmpeg/core/dist/umd/ffmpeg-core.js'));
 const coreWasm = await readFile(resolve(root, 'node_modules/@ffmpeg/core/dist/umd/ffmpeg-core.wasm'));
+const coreSource = coreJS.toString('utf8');
 
-const workerSource = String.raw`
+const workerHarness = String.raw`
+;const __INLINE_FFMPEG_CORE_DIRECT__ = true;
 let core = null;
-async function load({ coreURL, wasmURL }) {
-  importScripts(coreURL);
-  const response = await fetch(wasmURL);
-  if (!response.ok) throw new Error('内置 WASM Blob 读取失败');
-  const wasmBinary = new Uint8Array(await response.arrayBuffer());
+async function load({ wasmBinary }) {
+  if (!(wasmBinary instanceof Uint8Array)) wasmBinary = new Uint8Array(wasmBinary);
   const factory = typeof createFFmpegCore === 'function' ? createFFmpegCore : self.createFFmpegCore;
   if (typeof factory !== 'function') throw new Error('内置 FFmpeg core 没有正确加载');
-  const encodedLocations = btoa(JSON.stringify({ wasmURL, workerURL: '' }));
-  core = await factory({ wasmBinary, mainScriptUrlOrBlob: coreURL + '#' + encodedLocations });
+  core = await factory({ wasmBinary });
   core.setLogger((data) => self.postMessage({ type: 'LOG', data }));
   core.setProgress((data) => self.postMessage({ type: 'PROGRESS', data }));
   return true;
@@ -64,6 +62,11 @@ self.onmessage = async ({ data: message }) => {
 };
 `;
 
+// The FFmpeg UMD core is executed directly as part of the Blob Worker source.
+// This avoids nested blob:null URLs, importScripts(), and fetch(blob:) when the
+// standalone HTML is opened from file:// with an opaque origin.
+const workerSource = `${coreSource}\n${workerHarness}`;
+
 const runtime = String.raw`
 const __INLINE_WORKER_SOURCE__ = ${JSON.stringify(workerSource)};
 
@@ -76,26 +79,26 @@ function __inlineB64Length(b64) {
   return Math.floor(clean.length * 3 / 4) - padding;
 }
 
-async function __base64ElementToBlob(id, mime, onProgress, progressStart, progressSpan, decodedBase, decodedTotal) {
+async function __base64ElementToBytes(id, onProgress) {
   const node = document.getElementById(id);
   if (!node) throw new Error('单文件内置资源缺失：' + id);
   const b64 = node.textContent.trim();
+  const total = __inlineB64Length(b64);
+  const output = new Uint8Array(total);
   const chunkChars = 1024 * 1024;
-  const chunks = [];
-  let decoded = 0;
+  let written = 0;
+
   for (let offset = 0; offset < b64.length;) {
     let end = Math.min(b64.length, offset + chunkChars);
     if (end < b64.length) end -= (end - offset) % 4;
     const binary = atob(b64.slice(offset, end));
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    chunks.push(bytes);
-    decoded += bytes.byteLength;
+    for (let i = 0; i < binary.length; i++) output[written + i] = binary.charCodeAt(i);
+    written += binary.length;
     offset = end;
-    if (onProgress) onProgress(progressStart + progressSpan * (b64.length ? offset / b64.length : 1), decodedBase + decoded, decodedTotal);
+    if (onProgress) onProgress(b64.length ? offset / b64.length : 1, written, total);
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
-  return new Blob(chunks, { type: mime });
+  return output;
 }
 
 class InlineFFmpeg {
@@ -116,17 +119,9 @@ class InlineFFmpeg {
     });
   }
   async load(onProgress) {
-    const jsNode = document.getElementById('ffmpeg-core-js-b64');
     const wasmNode = document.getElementById('ffmpeg-core-wasm-b64');
-    if (!jsNode || !wasmNode) throw new Error('HTML 中没有找到内置 FFmpeg 引擎');
-    const jsSize = __inlineB64Length(jsNode.textContent);
-    const wasmSize = __inlineB64Length(wasmNode.textContent);
-    const total = jsSize + wasmSize;
-    const jsRatio = total ? jsSize / total : 0;
-    const coreBlob = await __base64ElementToBlob('ffmpeg-core-js-b64', 'text/javascript', onProgress, 0, jsRatio, 0, total);
-    const wasmBlob = await __base64ElementToBlob('ffmpeg-core-wasm-b64', 'application/wasm', onProgress, jsRatio, 1 - jsRatio, jsSize, total);
-    const coreURL = URL.createObjectURL(coreBlob);
-    const wasmURL = URL.createObjectURL(wasmBlob);
+    if (!wasmNode) throw new Error('HTML 中没有找到内置 FFmpeg WASM 引擎');
+    const wasmBinary = await __base64ElementToBytes('ffmpeg-core-wasm-b64', onProgress);
     const workerURL = URL.createObjectURL(new Blob([__INLINE_WORKER_SOURCE__], { type: 'text/javascript' }));
     this.worker = new Worker(workerURL);
     this.worker.onmessage = ({ data: message }) => {
@@ -144,10 +139,8 @@ class InlineFFmpeg {
       this.pending.clear();
     };
     try {
-      await this.request('LOAD', { coreURL, wasmURL });
+      await this.request('LOAD', { wasmBinary }, [wasmBinary.buffer]);
     } finally {
-      URL.revokeObjectURL(coreURL);
-      URL.revokeObjectURL(wasmURL);
       URL.revokeObjectURL(workerURL);
     }
   }
@@ -170,7 +163,6 @@ class InlineFFmpeg {
 `;
 
 const escapeScript = (text) => text.replace(/<\/script/gi, '<\\/script');
-const jsB64 = coreJS.toString('base64');
 const wasmB64 = coreWasm.toString('base64');
 
 const html = `<!doctype html>
@@ -186,7 +178,6 @@ const html = `<!doctype html>
 <body>
   <main id="app"><div class="shell"><div class="card" style="padding:24px">正在加载单文件离线工具…</div></div></main>
   <script>${escapeScript(runtime)}\n${escapeScript(app)}</script>
-  <script id="ffmpeg-core-js-b64" type="application/octet-stream">${jsB64}</script>
   <script id="ffmpeg-core-wasm-b64" type="application/octet-stream">${wasmB64}</script>
 </body>
 </html>`;
@@ -195,5 +186,5 @@ await rm(resolve(root, 'dist'), { recursive: true, force: true });
 await mkdir(resolve(root, 'dist'), { recursive: true });
 await writeFile(resolve(root, 'dist/index.html'), html);
 console.log(`Built standalone dist/index.html: ${(Buffer.byteLength(html) / 1024 / 1024).toFixed(2)} MB`);
-console.log(`Embedded FFmpeg core JS: ${(coreJS.byteLength / 1024).toFixed(1)} KB`);
+console.log(`Embedded FFmpeg core JS directly in Worker: ${(coreJS.byteLength / 1024).toFixed(1)} KB`);
 console.log(`Embedded FFmpeg WASM: ${(coreWasm.byteLength / 1024 / 1024).toFixed(2)} MB`);
