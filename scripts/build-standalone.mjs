@@ -16,7 +16,8 @@ async function load({ coreURL, wasmURL }) {
   const wasmBinary = new Uint8Array(await response.arrayBuffer());
   const factory = typeof createFFmpegCore === 'function' ? createFFmpegCore : self.createFFmpegCore;
   if (typeof factory !== 'function') throw new Error('内置 FFmpeg core 没有正确加载');
-  core = await factory({ wasmBinary, mainScriptUrlOrBlob: coreURL });
+  const encodedLocations = btoa(JSON.stringify({ wasmURL, workerURL: '' }));
+  core = await factory({ wasmBinary, mainScriptUrlOrBlob: coreURL + '#' + encodedLocations });
   core.setLogger((data) => self.postMessage({ type: 'LOG', data }));
   core.setProgress((data) => self.postMessage({ type: 'PROGRESS', data }));
   return true;
