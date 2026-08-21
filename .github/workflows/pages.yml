@@ -39,6 +39,9 @@ jobs:
           test -f node_modules/@ffmpeg/core/dist/umd/ffmpeg-core.wasm
           ls -lh node_modules/@ffmpeg/core/dist/umd/ffmpeg-core.*
 
+      - name: Test audio track parser
+        run: node scripts/test-track-parser.mjs
+
       - name: Build standalone HTML
         run: npm run build
 
@@ -49,6 +52,7 @@ jobs:
           test "$(stat -c%s dist/index.html)" -gt 30000000
           grep -q 'id="ffmpeg-core-wasm-b64"' dist/index.html
           grep -q '__INLINE_FFMPEG_CORE_DIRECT__' dist/index.html
+          grep -q 'id="input-track-parser-fix"' dist/index.html
           ! grep -q 'id="ffmpeg-core-js-b64"' dist/index.html
           ! grep -q 'importScripts(coreURL)' dist/index.html
           ! grep -q 'fetch(wasmURL)' dist/index.html
