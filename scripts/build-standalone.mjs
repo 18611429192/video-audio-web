@@ -62,9 +62,6 @@ self.onmessage = async ({ data: message }) => {
 };
 `;
 
-// The FFmpeg UMD core is executed directly as part of the Blob Worker source.
-// This avoids nested blob:null URLs, importScripts(), and fetch(blob:) when the
-// standalone HTML is opened from file:// with an opaque origin.
 const workerSource = `${coreSource}\n${workerHarness}`;
 
 const runtime = String.raw`
@@ -171,8 +168,8 @@ const html = `<!doctype html>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <meta name="theme-color" content="#0b1020" />
-  <meta name="description" content="完全离线、单 HTML 文件的视频音频分离与 MP3 转换工具" />
-  <title>视频音频分离 · 单文件离线版</title>
+  <meta name="description" content="完全离线、单 HTML 文件的 20 功能音视频工具箱" />
+  <title>音视频工具箱 · 20 功能单文件离线版</title>
   <style>${css}</style>
 </head>
 <body>
