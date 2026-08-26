@@ -1,12 +1,12 @@
 {
   "name": "video-audio-web",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Single-file offline browser audio/video toolbox with 20 common media operations powered by FFmpeg WebAssembly.",
   "type": "module",
   "scripts": {
     "build": "node scripts/build-standalone.mjs && node scripts/inject-track-parser.mjs",
-    "test:tools": "node --check src/standalone-app.js && node scripts/test-tools.mjs"
+    "test:tools": "node --check src/standalone-app.js && node scripts/test-tools.mjs && node scripts/test-ux.mjs"
   },
   "dependencies": {
     "@ffmpeg/core": "0.12.10"
