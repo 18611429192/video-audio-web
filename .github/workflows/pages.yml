@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -64,16 +64,19 @@ jobs:
           echo "Standalone file:"
           ls -lh dist/index.html
 
-      - name: Force Pages source to GitHub Actions
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Sync generated app to repository root
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
-          echo "Switching repository Pages build source from branch/Jekyll to GitHub Actions..."
-          gh api --method PUT "repos/${GITHUB_REPOSITORY}/pages" -f build_type=workflow
-          BUILD_TYPE="$(gh api "repos/${GITHUB_REPOSITORY}/pages" --jq '.build_type')"
-          echo "Pages build_type=${BUILD_TYPE}"
-          test "${BUILD_TYPE}" = "workflow"
+          cp dist/index.html index.html
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f index.html
+          if git diff --cached --quiet; then
+            echo "Root index.html is already current."
+          else
+            git commit -m "build: sync generated Pages app"
+            git push origin HEAD:main
+          fi
 
       - name: Upload offline HTML artifact
         uses: actions/upload-artifact@v4
