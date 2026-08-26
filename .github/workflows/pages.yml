@@ -64,6 +64,17 @@ jobs:
           echo "Standalone file:"
           ls -lh dist/index.html
 
+      - name: Force Pages source to GitHub Actions
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          echo "Switching repository Pages build source from branch/Jekyll to GitHub Actions..."
+          gh api --method PUT "repos/${GITHUB_REPOSITORY}/pages" -f build_type=workflow
+          BUILD_TYPE="$(gh api "repos/${GITHUB_REPOSITORY}/pages" --jq '.build_type')"
+          echo "Pages build_type=${BUILD_TYPE}"
+          test "${BUILD_TYPE}" = "workflow"
+
       - name: Upload offline HTML artifact
         uses: actions/upload-artifact@v4
         with:
@@ -72,17 +83,17 @@ jobs:
           retention-days: 90
 
       - name: Configure Pages
-        if: github.ref == 'refs/heads/main'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         uses: actions/configure-pages@v5
 
       - name: Upload Pages artifact
-        if: github.ref == 'refs/heads/main'
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         uses: actions/upload-pages-artifact@v3
         with:
           path: dist
 
   deploy:
-    if: github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
