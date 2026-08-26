@@ -1,95 +1,79 @@
-# 视频音频分离 · 单文件离线版
+# 音视频工具箱
 
-这是一个完全在浏览器本地运行的视频音轨提取与 MP3 转换工具。
-
-最终发布物只有 **一个 `index.html`**。页面、样式、FFmpeg Worker、`ffmpeg-core.js` 和约 30.7 MB 的 WebAssembly 核心都内置在这个 HTML 中，因此可以离线保存、复制和分发，不依赖 CDN、服务器、Service Worker 或其他静态文件。
+一个完全在浏览器本机运行的音视频处理工具。核心使用 FFmpeg WebAssembly，GitHub Pages 发布版本仍然构建为 **单个 HTML 文件**：不上传用户媒体文件，不依赖服务器转码，也不再引入其他媒体处理引擎。
 
 ## 在线使用
 
-GitHub Pages：
+GitHub Pages：`https://18611429192.github.io/video-audio-web/`
 
-https://18611429192.github.io/video-audio-web/
+首次打开页面后，FFmpeg WASM 已包含在页面本身。处理过程全部发生在浏览器本地。
 
-Pages 与离线文件使用的是同一套单文件构建产物。
+## 20 个功能
 
-## 功能
+1. 视频转音频：MP3 / WAV / M4A
+2. 音频转格式：MP3 / WAV / M4A / AAC / FLAC
+3. 视频转 MP4：优先无损重新封装，不兼容时转 H.264 + AAC
+4. 去除视频声音
+5. 给视频添加 / 替换音频
+6. 视频裁剪
+7. 音频裁剪
+8. 视频拼接
+9. 音频拼接
+10. 视频压缩：高质量 / 推荐 / 小体积
+11. 音频压缩：320 / 192 / 128 kbps
+12. 视频改尺寸：1080P / 720P / 480P
+13. 视频改比例：16:9 / 9:16 / 1:1
+14. 视频旋转：90° / 180° / 270°
+15. 视频镜像：左右 / 上下
+16. 视频倍速：0.5x / 1.5x / 2x
+17. 音频倍速：0.5x / 1.5x / 2x
+18. 调整音量：50% / 100% / 150% / 200%
+19. 批量处理多个文件
+20. 选择或拖入文件夹批量处理
 
-- 手机和电脑浏览器均可使用
-- 拖拽或选择本地视频
-- 支持 FFmpeg 能识别的常见视频容器和音频编码
-- 自动识别并列出多条音轨
-- 可选择一条或多条音轨转换
-- 输出 MP3：VBR 高质量、128 / 192 / 256 / 320 kbps
-- 优先使用 WORKERFS 直接读取本地文件，减少手机端大文件内存复制
-- 音轨分析使用 FFmpeg 媒体日志，避免部分移动浏览器中 ffprobe 的异常
-- 显示引擎展开、分析和转换进度
-- 视频与音频数据不会上传到服务器
+原有的真实多音轨识别与提取能力继续保留。单个视频做“视频转音频”时，会从 FFmpeg 输入媒体日志识别实际 Audio Stream，并允许选择需要导出的音轨。
 
-## 离线使用
+## 设计原则
 
-GitHub Actions 每次构建都会上传一个名为 `video-audio-offline-single-html` 的 artifact，其中只有最终的 `index.html`。
+- 只使用 FFmpeg / FFmpeg WebAssembly，不增加新的处理引擎。
+- 普通用户界面不暴露 CRF、preset、codec 等复杂参数。
+- 能直接复制媒体流时优先避免无意义重编码。
+- 多文件任务顺序执行，降低浏览器同时占用的内存。
+- 优先使用 WORKERFS 直接读取用户选择的本地文件；不可用时再使用内存兼容模式。
+- 手机和电脑都可使用，但超大媒体仍会受到浏览器内存与系统资源限制。
 
-下载后可以把文件改名为任意名称，例如：
-
-```text
-video-audio-offline.html
-```
-
-然后直接用现代浏览器打开即可。文件约 41 MB，因为 FFmpeg WebAssembly 已完整内置。
-
-离线版针对 `file://` 场景做了专门处理：FFmpeg core JavaScript 直接编译进 Blob Worker 本身，WASM 二进制由主页面解码后通过 `postMessage` 直接传给 Worker。运行时不会再让 Worker 调用 `importScripts(blob:null/...)`，也不会在 Worker 中 `fetch(blob:null/...)`，因此可避开部分浏览器对不透明 `file://` Origin 的二级 Blob 加载限制。
-
-> 手机文件管理器自带的“网页预览”仍可能完全禁用 Web Worker。遇到这种情况，请选择 Chrome、Edge、Safari 等正式浏览器打开 HTML 文件。
-
-## 从源码构建
+## 本地构建
 
 需要 Node.js 22 或更高版本。
 
 ```bash
 npm install
+npm run test:tools
 npm run build
 ```
 
 构建结果：
 
 ```text
-dist/
-└── index.html
+dist/index.html
 ```
 
-构建脚本会从 `@ffmpeg/core` 读取 UMD 版 `ffmpeg-core.js` 和 `ffmpeg-core.wasm`：core JavaScript 直接嵌入 Worker 源码，WASM 编码后嵌入 HTML；页面 CSS、应用逻辑和 Worker 也全部内联。
-
-生成的 `dist/index.html` 不提交到仓库，以避免每次修改都产生约 41 MB 的大文件 diff；GitHub Actions 会构建并发布这个单文件产物。
-
-## 仓库结构
-
-```text
-.github/workflows/pages.yml   GitHub Pages / 离线 artifact 构建与发布
-scripts/build-standalone.mjs  单 HTML 构建器
-src/standalone-app.js         浏览器端应用逻辑
-src/style.css                 页面样式
-package.json                  构建依赖与命令
-```
-
-当前运行架构不再使用 Vite、外部 Worker、Service Worker 或运行时 CDN。
+`dist/index.html` 是单文件离线版本，其中包含 FFmpeg core JavaScript 和 WASM。
 
 ## GitHub Pages 发布
 
-推送到 `main` 后，GitHub Actions 会：
+`.github/workflows/pages.yml` 会在 `main` 分支推送后自动执行：
 
-1. 安装 `@ffmpeg/core`。
-2. 构建单个 `dist/index.html`。
-3. 校验 `dist` 中只有这一个文件，并确认 WASM 和 FFmpeg core Worker 已内嵌。
-4. 校验最终 HTML 不再包含旧的 `importScripts(coreURL)` / `fetch(wasmURL)` 二级 Blob 加载方式。
-5. 上传离线 HTML artifact。
-6. 将相同的 `dist` 发布到 GitHub Pages。
+1. 安装 `@ffmpeg/core`
+2. 校验 20 个工具入口和处理器
+3. 运行多音轨解析测试
+4. 构建单文件 `dist/index.html`
+5. 验证 FFmpeg WASM、离线 Worker 和音轨解析修复已内置
+6. 上传构建 artifact
+7. 部署 GitHub Pages
 
-Pull Request 也会执行同样的单文件构建校验，但不会部署 Pages。
+## 说明
 
-## 隐私
+视频拼接采用快速流复制方式，因此用于拼接的视频最好具有一致的编码、分辨率和主要参数。素材差异较大时，可先使用“视频转 MP4”统一后再拼接。
 
-所有视频分析、音轨读取和 MP3 转换都在当前浏览器进程中完成。工具没有后端接口，不会把用户选择的视频上传到服务器。
-
-## 当前限制
-
-FFmpeg WebAssembly 仍受浏览器内存、文件系统和移动设备资源限制。单文件版会优先直接挂载本地视频，但超大视频、低内存设备或浏览器主动回收页面时仍可能处理失败。对于数 GB 以上的视频，桌面原生 FFmpeg 通常更稳定。
+所有媒体处理都发生在当前浏览器中。页面本身不会把用户选择的视频或音频上传到 GitHub Pages 或其他服务器。
