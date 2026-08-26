@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 const root = resolve('.');
 const css = await readFile(resolve(root, 'src/style.css'), 'utf8');
 const app = await readFile(resolve(root, 'src/standalone-app.js'), 'utf8');
+const previewHotfix = await readFile(resolve(root, 'src/preview-scrub-hotfix.js'), 'utf8');
 const coreJS = await readFile(resolve(root, 'node_modules/@ffmpeg/core/dist/umd/ffmpeg-core.js'));
 const coreWasm = await readFile(resolve(root, 'node_modules/@ffmpeg/core/dist/umd/ffmpeg-core.wasm'));
 const coreSource = coreJS.toString('utf8');
@@ -174,7 +175,7 @@ const html = `<!doctype html>
 </head>
 <body>
   <main id="app"><div class="shell"><div class="card" style="padding:24px">正在加载单文件离线工具…</div></div></main>
-  <script>${escapeScript(runtime)}\n${escapeScript(app)}</script>
+  <script>${escapeScript(runtime)}\n${escapeScript(app)}\n${escapeScript(previewHotfix)}</script>
   <script id="ffmpeg-core-wasm-b64" type="application/octet-stream">${wasmB64}</script>
 </body>
 </html>`;
