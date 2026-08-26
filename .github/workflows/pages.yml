@@ -39,7 +39,7 @@ jobs:
           test -f node_modules/@ffmpeg/core/dist/umd/ffmpeg-core.wasm
           ls -lh node_modules/@ffmpeg/core/dist/umd/ffmpeg-core.*
 
-      - name: Test 20-tool application
+      - name: Test 20 tools and four-stage UX
         run: npm run test:tools
 
       - name: Test audio track parser
@@ -57,7 +57,10 @@ jobs:
           grep -q '__INLINE_FFMPEG_CORE_DIRECT__' dist/index.html
           grep -q 'id="input-track-parser-fix"' dist/index.html
           grep -q '音视频工具箱' dist/index.html
-          grep -q '20 个工具' dist/index.html
+          grep -q '先预览，再调整，最后导出' dist/index.html
+          grep -q 'id="previewHost"' dist/index.html
+          grep -q 'id="trimPanel"' dist/index.html
+          grep -q 'id="taskList"' dist/index.html
           ! grep -q 'id="ffmpeg-core-js-b64"' dist/index.html
           ! grep -q 'importScripts(coreURL)' dist/index.html
           ! grep -q 'fetch(wasmURL)' dist/index.html

@@ -18,26 +18,15 @@ for (let i = 1; i <= 20; i++) {
 }
 
 const requiredMarkers = [
-  'WORKERFS',
-  'parseTracksFromLogs',
-  'libmp3lame',
-  'libx264',
-  'webkitdirectory',
-  'webkitGetAsEntry',
-  'filter_complex',
-  'concat=n=',
-  'atempo=',
-  'volume=',
-  'transpose=',
-  'hflip',
-  'scale=',
-  'force_original_aspect_ratio=decrease',
+  'WORKERFS', 'parseTracksFromLogs', 'libmp3lame', 'libx264', 'webkitdirectory',
+  'webkitGetAsEntry', 'filter_complex', 'concat=n=', 'atempo=', 'volume=',
+  'transpose=', 'hflip', 'scale=', 'force_original_aspect_ratio=decrease',
 ];
 for (const marker of requiredMarkers) {
   if (!source.includes(marker)) throw new Error(`Missing implementation marker: ${marker}`);
 }
 
-const processorBlock = source.match(/const PROCESSORS = \{([\s\S]*?)\n\};/m)?.[1] || '';
+const processorBlock = source.match(/const PROCESSORS\s*=\s*\{([\s\S]*?)\};/m)?.[1] || '';
 for (const key of requiredTools) {
   if (!new RegExp(`\\b${key}\\s*:`).test(processorBlock)) throw new Error(`Tool not wired to processor: ${key}`);
 }
